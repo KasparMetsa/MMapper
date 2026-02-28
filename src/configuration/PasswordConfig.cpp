@@ -12,7 +12,10 @@
 // clang-format off
 
 // Store a password encrypted with AES-GCM-256 in IndexedDB.
-// Generates a new non-extractable CryptoKey on every save (more secure).
+// Generates a new CryptoKey on every save, exports the raw key bytes for
+// storage. We store raw bytes (not the CryptoKey object) because Firefox
+// throws DataCloneError when serializing non-extractable CryptoKey objects
+// into IndexedDB via structured clone.
 // Returns 0 on success, -1 on error.
 EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
     try {
@@ -21,7 +24,7 @@ EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
 
         const cryptoKey = await crypto.subtle.generateKey(
             { name: "AES-GCM", length: 256 },
-            false, // non-extractable
+            true, // extractable — needed to export raw bytes for IndexedDB storage
             ["encrypt", "decrypt"]
         );
 
@@ -32,6 +35,9 @@ EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
             cryptoKey,
             encoded
         );
+
+        // Export key as raw bytes instead of storing the CryptoKey object.
+        const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", cryptoKey));
 
         const db = await new Promise((resolve, reject) => {
             const req = indexedDB.open("mmapper-credentials", 1);
@@ -48,7 +54,7 @@ EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
         await new Promise((resolve, reject) => {
             const tx = db.transaction("passwords", "readwrite");
             const store = tx.objectStore("passwords");
-            store.put({ cryptoKey: cryptoKey, iv: iv, ciphertext: new Uint8Array(ciphertext) }, keyStr);
+            store.put({ rawKey: rawKey, iv: iv, ciphertext: new Uint8Array(ciphertext) }, keyStr);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
         });
@@ -94,9 +100,18 @@ EM_ASYNC_JS(char *, wasm_read_password, (const char *key), {
             return 0; // not found
         }
 
+        // Import raw key bytes back into a CryptoKey for decryption.
+        const cryptoKey = await crypto.subtle.importKey(
+            "raw",
+            record.rawKey,
+            { name: "AES-GCM" },
+            false, // non-extractable for decryption use
+            ["decrypt"]
+        );
+
         const decrypted = await crypto.subtle.decrypt(
             { name: "AES-GCM", iv: record.iv },
-            record.cryptoKey,
+            cryptoKey,
             record.ciphertext
         );
 
