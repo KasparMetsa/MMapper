@@ -6,8 +6,8 @@
 #include "../global/macros.h"
 
 #ifdef Q_OS_WASM
-#include <emscripten.h>
 #include <cstdlib>
+#include <emscripten.h>
 
 // clang-format off
 
