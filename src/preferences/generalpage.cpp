@@ -14,54 +14,7 @@
 #include <QtWidgets>
 
 #ifdef Q_OS_WASM
-// Workaround for Qt WASM double character input bug.
-// Qt's WASM platform plugin generates both a QKeyEvent (from JS keydown)
-// and a QInputMethodEvent (from the hidden <input> element's input method
-// context) for each keystroke. Both events insert the same character into
-// the QLineEdit, causing every character to appear twice.
-// Fix: allow the first insertion event and suppress the duplicate.
-class WasmInputDeduplicateFilter final : public QObject
-{
-public:
-    using QObject::QObject;
-
-protected:
-    bool eventFilter(QObject *obj, QEvent *event) override
-    {
-        if (event->type() == QEvent::KeyPress) {
-            auto *ke = static_cast<QKeyEvent *>(event);
-            const QString text = ke->text();
-            if (!text.isEmpty() && text.at(0).isPrint()) {
-                if (m_suppressDuplicate && m_lastText == text) {
-                    m_suppressDuplicate = false;
-                    return true; // suppress duplicate insertion
-                }
-                m_lastText = text;
-                m_suppressDuplicate = true;
-            } else {
-                // Non-printable key (Backspace, arrows, etc.) — reset state
-                m_suppressDuplicate = false;
-                m_lastText.clear();
-            }
-        } else if (event->type() == QEvent::InputMethod) {
-            auto *ime = static_cast<QInputMethodEvent *>(event);
-            const QString commit = ime->commitString();
-            if (!commit.isEmpty()) {
-                if (m_suppressDuplicate && m_lastText == commit) {
-                    m_suppressDuplicate = false;
-                    return true; // suppress duplicate insertion
-                }
-                m_lastText = commit;
-                m_suppressDuplicate = true;
-            }
-        }
-        return QObject::eventFilter(obj, event);
-    }
-
-private:
-    QString m_lastText;
-    bool m_suppressDuplicate = false;
-};
+#include "WasmInputDeduplicateFilter.h"
 #endif
 
 // Order of entries in charsetComboBox drop down
