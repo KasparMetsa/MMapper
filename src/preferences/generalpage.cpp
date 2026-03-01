@@ -213,34 +213,46 @@ GeneralPage::GeneralPage(QWidget *parent)
         ui->accountPassword->setEchoMode(QLineEdit::Normal);
     });
 
-    // Debounce password saves to prevent overlapping ASYNCIFY operations in WASM.
-    // Each wasm_store_password() call suspends the C++ stack via ASYNCIFY; rapid
-    // keystrokes would cause concurrent suspend/rewind cycles, corrupting emval
-    // handles in Firefox. The timer ensures only one save runs after typing stops.
-    auto *passwordSaveTimer = new QTimer(this);
-    passwordSaveTimer->setSingleShot(true);
-    passwordSaveTimer->setInterval(500);
+    if constexpr (CURRENT_PLATFORM == PlatformEnum::Wasm) {
+        // In WASM, debounce password saves to avoid redundant IndexedDB writes on
+        // every keystroke. The JS-level serialization queue in wasm_store_password
+        // prevents overlapping ASYNCIFY rewinds (the Firefox crash fix), but without
+        // debounce each keystroke would still queue a full encrypt+store cycle.
+        auto *passwordSaveTimer = new QTimer(this);
+        passwordSaveTimer->setSingleShot(true);
+        passwordSaveTimer->setInterval(500);
 
-    connect(passwordSaveTimer, &QTimer::timeout, this, [this]() {
-        const QString password = ui->accountPassword->text();
-        if (!password.isEmpty()) {
-            passCfg.setPassword(password);
-        }
-    });
+        connect(passwordSaveTimer, &QTimer::timeout, this, [this]() {
+            const QString password = ui->accountPassword->text();
+            if (!password.isEmpty()) {
+                passCfg.setPassword(password);
+            }
+        });
 
-    connect(ui->accountPassword,
-            &QLineEdit::textEdited,
-            this,
-            [this, passwordSaveTimer](const QString &password) {
-                m_passwordFieldHasDummy = false;
-                setConfig().account.accountPassword = !password.isEmpty();
-                if (!password.isEmpty()) {
-                    passwordSaveTimer->start(); // (re)start — fires 500ms after last keystroke
-                } else {
-                    passwordSaveTimer->stop();
-                    passCfg.deletePassword();
-                }
-            });
+        connect(ui->accountPassword,
+                &QLineEdit::textEdited,
+                this,
+                [this, passwordSaveTimer](const QString &password) {
+                    m_passwordFieldHasDummy = false;
+                    setConfig().account.accountPassword = !password.isEmpty();
+                    if (!password.isEmpty()) {
+                        passwordSaveTimer->start(); // (re)start — fires 500ms after last keystroke
+                    } else {
+                        passwordSaveTimer->stop();
+                        passCfg.deletePassword();
+                    }
+                });
+    } else {
+        connect(ui->accountPassword, &QLineEdit::textEdited, this, [this](const QString &password) {
+            m_passwordFieldHasDummy = false;
+            setConfig().account.accountPassword = !password.isEmpty();
+            if (!password.isEmpty()) {
+                passCfg.setPassword(password);
+            } else {
+                passCfg.deletePassword();
+            }
+        });
+    }
 
     connect(ui->showPassword, &QAbstractButton::clicked, this, [this]() {
         if (ui->showPassword->text() == "Hide Password") {

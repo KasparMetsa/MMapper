@@ -18,6 +18,15 @@
 // into IndexedDB via structured clone.
 // Returns 0 on success, -1 on error.
 EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
+    // Serialize concurrent calls — each invocation suspends the C++ stack via
+    // ASYNCIFY, and overlapping rewinds corrupt emval handles in Firefox.
+    // A promise queue ensures only one save is in flight at a time.
+    if (!Module._passwordSaveQueue) Module._passwordSaveQueue = Promise.resolve();
+    const prev = Module._passwordSaveQueue;
+    let resolveQueue;
+    Module._passwordSaveQueue = new Promise(r => { resolveQueue = r; });
+    await prev;
+
     try {
         const keyStr = UTF8ToString(key);
         const passwordStr = UTF8ToString(password);
@@ -64,6 +73,8 @@ EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
     } catch (e) {
         console.error("wasm_store_password error:", e);
         return -1;
+    } finally {
+        resolveQueue();
     }
 });
 
@@ -129,6 +140,14 @@ EM_ASYNC_JS(char *, wasm_read_password, (const char *key), {
 // Delete a password entry from IndexedDB.
 // Returns 0 on success, -1 on error.
 EM_ASYNC_JS(int, wasm_delete_password, (const char *key), {
+    // Share the same serialization queue as wasm_store_password to prevent
+    // a delete from racing with an in-flight store (or vice versa).
+    if (!Module._passwordSaveQueue) Module._passwordSaveQueue = Promise.resolve();
+    const prev = Module._passwordSaveQueue;
+    let resolveQueue;
+    Module._passwordSaveQueue = new Promise(r => { resolveQueue = r; });
+    await prev;
+
     try {
         const keyStr = UTF8ToString(key);
 
@@ -157,6 +176,8 @@ EM_ASYNC_JS(int, wasm_delete_password, (const char *key), {
     } catch (e) {
         console.error("wasm_delete_password error:", e);
         return -1;
+    } finally {
+        resolveQueue();
     }
 });
 
