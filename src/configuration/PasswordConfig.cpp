@@ -16,66 +16,60 @@
 // storage. We store raw bytes (not the CryptoKey object) because Firefox
 // throws DataCloneError when serializing non-extractable CryptoKey objects
 // into IndexedDB via structured clone.
-// Returns 0 on success, -1 on error.
-EM_ASYNC_JS(int, wasm_store_password, (const char *key, const char *password), {
-    // Serialize concurrent calls — each invocation suspends the C++ stack via
-    // ASYNCIFY, and overlapping rewinds corrupt emval handles in Firefox.
-    // A promise queue ensures only one save is in flight at a time.
+//
+// Fire-and-forget: uses EM_JS (not EM_ASYNC_JS) so the C++ call returns
+// immediately without suspending the ASYNCIFY stack. The actual encrypt +
+// IndexedDB write runs asynchronously in a JS promise chain. This prevents
+// the Qt event loop from being blocked during saves, which was causing
+// dropped keystrokes when typing fast.
+EM_JS(void, wasm_store_password, (const char *key, const char *password), {
+    var keyStr = UTF8ToString(key);
+    var passwordStr = UTF8ToString(password);
+
     if (!Module._passwordSaveQueue) Module._passwordSaveQueue = Promise.resolve();
-    const prev = Module._passwordSaveQueue;
-    let resolveQueue;
-    Module._passwordSaveQueue = new Promise(r => { resolveQueue = r; });
-    await prev;
+    Module._passwordSaveQueue = Module._passwordSaveQueue.then(async function() {
+        try {
+            var cryptoKey = await crypto.subtle.generateKey(
+                { name: "AES-GCM", length: 256 },
+                true,
+                ["encrypt", "decrypt"]
+            );
 
-    try {
-        const keyStr = UTF8ToString(key);
-        const passwordStr = UTF8ToString(password);
+            var iv = crypto.getRandomValues(new Uint8Array(12));
+            var encoded = new TextEncoder().encode(passwordStr);
+            var ciphertext = await crypto.subtle.encrypt(
+                { name: "AES-GCM", iv: iv },
+                cryptoKey,
+                encoded
+            );
 
-        const cryptoKey = await crypto.subtle.generateKey(
-            { name: "AES-GCM", length: 256 },
-            true, // extractable — needed to export raw bytes for IndexedDB storage
-            ["encrypt", "decrypt"]
-        );
+            var rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", cryptoKey));
 
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const encoded = new TextEncoder().encode(passwordStr);
-        const ciphertext = await crypto.subtle.encrypt(
-            { name: "AES-GCM", iv: iv },
-            cryptoKey,
-            encoded
-        );
+            var db = await new Promise(function(resolve, reject) {
+                var req = indexedDB.open("mmapper-credentials", 1);
+                req.onupgradeneeded = function() {
+                    var db2 = req.result;
+                    if (!db2.objectStoreNames.contains("passwords")) {
+                        db2.createObjectStore("passwords");
+                    }
+                };
+                req.onsuccess = function() { resolve(req.result); };
+                req.onerror = function() { reject(req.error); };
+            });
 
-        // Export key as raw bytes instead of storing the CryptoKey object.
-        const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", cryptoKey));
+            await new Promise(function(resolve, reject) {
+                var tx = db.transaction("passwords", "readwrite");
+                var store = tx.objectStore("passwords");
+                store.put({ rawKey: rawKey, iv: iv, ciphertext: new Uint8Array(ciphertext) }, keyStr);
+                tx.oncomplete = function() { resolve(); };
+                tx.onerror = function() { reject(tx.error); };
+            });
 
-        const db = await new Promise((resolve, reject) => {
-            const req = indexedDB.open("mmapper-credentials", 1);
-            req.onupgradeneeded = () => {
-                const db = req.result;
-                if (!db.objectStoreNames.contains("passwords")) {
-                    db.createObjectStore("passwords");
-                }
-            };
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-
-        await new Promise((resolve, reject) => {
-            const tx = db.transaction("passwords", "readwrite");
-            const store = tx.objectStore("passwords");
-            store.put({ rawKey: rawKey, iv: iv, ciphertext: new Uint8Array(ciphertext) }, keyStr);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
-        });
-
-        db.close();
-        return 0;
-    } catch (e) {
-        console.error("wasm_store_password error:", e);
-        return -1;
-    } finally {
-        resolveQueue();
-    }
+            db.close();
+        } catch (e) {
+            console.error("wasm_store_password error:", e);
+        }
+    });
 });
 
 // Read and decrypt a password from IndexedDB.
@@ -138,49 +132,40 @@ EM_ASYNC_JS(char *, wasm_read_password, (const char *key), {
 });
 
 // Delete a password entry from IndexedDB.
-// Returns 0 on success, -1 on error.
-EM_ASYNC_JS(int, wasm_delete_password, (const char *key), {
-    // Share the same serialization queue as wasm_store_password to prevent
-    // a delete from racing with an in-flight store (or vice versa).
+// Fire-and-forget: shares the same promise chain as wasm_store_password
+// to prevent a delete from racing with an in-flight store.
+EM_JS(void, wasm_delete_password, (const char *key), {
+    var keyStr = UTF8ToString(key);
+
     if (!Module._passwordSaveQueue) Module._passwordSaveQueue = Promise.resolve();
-    const prev = Module._passwordSaveQueue;
-    let resolveQueue;
-    Module._passwordSaveQueue = new Promise(r => { resolveQueue = r; });
-    await prev;
+    Module._passwordSaveQueue = Module._passwordSaveQueue.then(async function() {
+        try {
+            var db = await new Promise(function(resolve, reject) {
+                var req = indexedDB.open("mmapper-credentials", 1);
+                req.onupgradeneeded = function() {
+                    var db2 = req.result;
+                    if (!db2.objectStoreNames.contains("passwords")) {
+                        db2.createObjectStore("passwords");
+                    }
+                };
+                req.onsuccess = function() { resolve(req.result); };
+                req.onerror = function() { reject(req.error); };
+            });
 
-    try {
-        const keyStr = UTF8ToString(key);
+            await new Promise(function(resolve, reject) {
+                var tx = db.transaction("passwords", "readwrite");
+                var store = tx.objectStore("passwords");
+                store["delete"](keyStr);
+                tx.oncomplete = function() { resolve(); };
+                tx.onerror = function() { reject(tx.error); };
+            });
 
-        const db = await new Promise((resolve, reject) => {
-            const req = indexedDB.open("mmapper-credentials", 1);
-            req.onupgradeneeded = () => {
-                const db = req.result;
-                if (!db.objectStoreNames.contains("passwords")) {
-                    db.createObjectStore("passwords");
-                }
-            };
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-
-        await new Promise((resolve, reject) => {
-            const tx = db.transaction("passwords", "readwrite");
-            const store = tx.objectStore("passwords");
-            store.delete(keyStr);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error);
-        });
-
-        db.close();
-        return 0;
-    } catch (e) {
-        console.error("wasm_delete_password error:", e);
-        return -1;
-    } finally {
-        resolveQueue();
-    }
+            db.close();
+        } catch (e) {
+            console.error("wasm_delete_password error:", e);
+        }
+    });
 });
-
 // clang-format on
 
 static const char *const WASM_PASSWORD_KEY = "password";
@@ -221,11 +206,10 @@ PasswordConfig::PasswordConfig(QObject *const parent)
 void PasswordConfig::setPassword(const QString &password)
 {
 #ifdef Q_OS_WASM
+    // Fire-and-forget: save runs asynchronously in JS without blocking the event loop.
+    // Errors are logged to the browser console.
     const QByteArray utf8 = password.toUtf8();
-    const int result = wasm_store_password(WASM_PASSWORD_KEY, utf8.constData());
-    if (result != 0) {
-        emit sig_error("Failed to store password in browser storage.");
-    }
+    wasm_store_password(WASM_PASSWORD_KEY, utf8.constData());
 #elif !defined(MMAPPER_NO_QTKEYCHAIN)
     m_writeJob.setKey(PASSWORD_KEY);
     m_writeJob.setTextData(password);
@@ -257,10 +241,7 @@ void PasswordConfig::getPassword()
 void PasswordConfig::deletePassword()
 {
 #ifdef Q_OS_WASM
-    const int result = wasm_delete_password(WASM_PASSWORD_KEY);
-    if (result != 0) {
-        emit sig_error("Failed to delete password from browser storage.");
-    }
+    wasm_delete_password(WASM_PASSWORD_KEY);
 #elif !defined(MMAPPER_NO_QTKEYCHAIN)
     // QtKeychain delete job (fire and forget)
     auto *deleteJob = new QKeychain::DeletePasswordJob(APP_NAME);

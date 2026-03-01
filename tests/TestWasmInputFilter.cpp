@@ -90,6 +90,29 @@ void TestWasmInputFilter::testDifferentCharsNotSuppressed()
     QCOMPARE(edit.text(), QString("ab"));
 }
 
+void TestWasmInputFilter::testRepeatedSameCharNotSuppressed()
+{
+    QLineEdit edit;
+    auto *filter = new WasmInputDeduplicateFilter(&edit);
+    edit.installEventFilter(filter);
+
+    // Typing "ee" — each keystroke produces KeyPress + InputMethod (Qt WASM bug).
+    // The InputMethod duplicate of each pair should be suppressed, but the second
+    // legitimate "e" keystroke must NOT be suppressed.
+
+    // First "e": KeyPress passes, InputMethod suppressed
+    sendKeyPress(edit, QChar('e'));
+    QCOMPARE(edit.text(), QString("e"));
+    sendInputMethod(edit, QStringLiteral("e"));
+    QCOMPARE(edit.text(), QString("e")); // duplicate suppressed
+
+    // Second "e": KeyPress must pass through (legitimate repeat), InputMethod suppressed
+    sendKeyPress(edit, QChar('e'));
+    QCOMPARE(edit.text(), QString("ee"));
+    sendInputMethod(edit, QStringLiteral("e"));
+    QCOMPARE(edit.text(), QString("ee")); // duplicate suppressed
+}
+
 void TestWasmInputFilter::testNonPrintableResetsState()
 {
     QLineEdit edit;

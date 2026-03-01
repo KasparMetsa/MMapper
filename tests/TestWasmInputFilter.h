@@ -19,5 +19,6 @@ private Q_SLOTS:
     void testDuplicateKeypressAndInputMethodSuppressed();
     void testDuplicateInputMethodAndKeypressSuppressed();
     void testDifferentCharsNotSuppressed();
+    void testRepeatedSameCharNotSuppressed();
     void testNonPrintableResetsState();
 };

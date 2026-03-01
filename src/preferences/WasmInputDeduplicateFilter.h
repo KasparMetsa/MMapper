@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2019 The MMapper Authors
 
+#include <QEvent>
 #include <QObject>
 #include <QString>
 
@@ -10,7 +11,10 @@
 // and a QInputMethodEvent (from the hidden <input> element's input method
 // context) for each keystroke. Both events insert the same character into
 // the QLineEdit, causing every character to appear twice.
-// Fix: allow the first insertion event and suppress the duplicate.
+// Fix: suppress a character only when the same text arrives from a
+// *different* event type (KeyPress vs InputMethod), which is the hallmark
+// of the Qt WASM double-fire bug.  Two same-type events with the same
+// text (e.g. pressing "e" twice) are legitimate and pass through.
 class WasmInputDeduplicateFilter final : public QObject
 {
 public:
@@ -22,5 +26,5 @@ protected:
 
 private:
     QString m_lastText;
-    bool m_suppressDuplicate = false;
+    QEvent::Type m_lastType = QEvent::None;
 };
