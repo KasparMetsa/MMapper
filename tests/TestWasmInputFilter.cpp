@@ -133,4 +133,33 @@ void TestWasmInputFilter::testNonPrintableResetsState()
     QCOMPARE(edit.text(), QString("a"));
 }
 
+void TestWasmInputFilter::testMultiCharCommitNotSuppressed()
+{
+    QLineEdit edit;
+    auto *filter = new WasmInputDeduplicateFilter(&edit);
+    edit.installEventFilter(filter);
+
+    // KeyPress "a" followed by InputMethod "ab" — different text, no suppression.
+    sendKeyPress(edit, QChar('a'));
+    QCOMPARE(edit.text(), QString("a"));
+
+    sendInputMethod(edit, QStringLiteral("ab"));
+    // Multi-char commit doesn't match single-char KeyPress, so it passes through.
+    QCOMPARE(edit.text(), QString("aab"));
+}
+
+void TestWasmInputFilter::testMultiCharInputMethodPasses()
+{
+    QLineEdit edit;
+    auto *filter = new WasmInputDeduplicateFilter(&edit);
+    edit.installEventFilter(filter);
+
+    // Two InputMethod events with multi-char commits — both should pass through.
+    sendInputMethod(edit, QStringLiteral("ab"));
+    QCOMPARE(edit.text(), QString("ab"));
+
+    sendInputMethod(edit, QStringLiteral("cd"));
+    QCOMPARE(edit.text(), QString("abcd"));
+}
+
 QTEST_MAIN(TestWasmInputFilter)

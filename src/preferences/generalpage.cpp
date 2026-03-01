@@ -214,7 +214,19 @@ GeneralPage::GeneralPage(QWidget *parent)
     });
 
     connect(ui->accountPassword, &QLineEdit::textEdited, this, [this](const QString &password) {
-        m_passwordFieldHasDummy = false;
+        if (m_passwordFieldHasDummy) {
+            m_passwordFieldHasDummy = false;
+            // User started typing over dummy dots — clear and keep only the new character.
+            // The last character is the one just typed; the rest are bullet placeholders.
+            const QSignalBlocker blocker(ui->accountPassword);
+            const QString newChar = password.right(1);
+            ui->accountPassword->setText(newChar);
+            setConfig().account.accountPassword = !newChar.isEmpty();
+            if (!newChar.isEmpty()) {
+                passCfg.setPassword(newChar);
+            }
+            return;
+        }
         setConfig().account.accountPassword = !password.isEmpty();
         if (!password.isEmpty()) {
             passCfg.setPassword(password);

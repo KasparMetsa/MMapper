@@ -21,4 +21,6 @@ private Q_SLOTS:
     void testDifferentCharsNotSuppressed();
     void testRepeatedSameCharNotSuppressed();
     void testNonPrintableResetsState();
+    void testMultiCharCommitNotSuppressed();
+    void testMultiCharInputMethodPasses();
 };

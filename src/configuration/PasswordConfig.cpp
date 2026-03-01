@@ -17,6 +17,12 @@
 // throws DataCloneError when serializing non-extractable CryptoKey objects
 // into IndexedDB via structured clone.
 //
+// Note: storing the raw key alongside the ciphertext means any same-origin JS
+// can decrypt. This is a deliberate trade-off — Firefox throws DataCloneError
+// when storing non-extractable CryptoKey objects in IndexedDB, and browser-
+// specific code paths proved unreliable. The encryption provides data-at-rest
+// protection and defense against accidental plaintext exposure in logs/UI.
+//
 // Fire-and-forget: uses EM_JS (not EM_ASYNC_JS) so the C++ call returns
 // immediately without suspending the ASYNCIFY stack. The actual encrypt +
 // IndexedDB write runs asynchronously in a JS promise chain. This prevents
@@ -73,8 +79,8 @@ EM_JS(void, wasm_store_password, (const char *key, const char *password), {
 });
 
 // Read and decrypt a password from IndexedDB.
-// Returns a malloc'd UTF-8 string on success, or NULL on error/not found.
-// Caller must free() the returned pointer.
+// Returns a malloc'd UTF-8 string on success (may be empty if no password is stored),
+// or NULL on error. Caller must free() the returned pointer.
 EM_ASYNC_JS(char *, wasm_read_password, (const char *key), {
     try {
         const keyStr = UTF8ToString(key);
@@ -102,7 +108,9 @@ EM_ASYNC_JS(char *, wasm_read_password, (const char *key), {
         db.close();
 
         if (!record) {
-            return 0; // not found
+            var emptyPtr = _malloc(1);
+            HEAPU8[emptyPtr] = 0;
+            return emptyPtr; // not found — empty string, not an error
         }
 
         // Import raw key bytes back into a CryptoKey for decryption.
@@ -224,11 +232,14 @@ void PasswordConfig::getPassword()
 {
 #ifdef Q_OS_WASM
     char *password = wasm_read_password(WASM_PASSWORD_KEY);
-    if (password) {
-        emit sig_incomingPassword(QString::fromUtf8(password));
+    if (!password) {
+        emit sig_error("Failed to retrieve password from browser storage.");
+    } else if (password[0] == '\0') {
+        // Not found — no password stored yet. Silent, not an error.
         free(password);
     } else {
-        emit sig_error("Failed to retrieve password from browser storage.");
+        emit sig_incomingPassword(QString::fromUtf8(password));
+        free(password);
     }
 #elif !defined(MMAPPER_NO_QTKEYCHAIN)
     m_readJob.setKey(PASSWORD_KEY);
